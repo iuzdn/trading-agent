@@ -1,0 +1,21 @@
+{
+  "name": "alpaca-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "now": "node index.js --now",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2"
+  }
+}

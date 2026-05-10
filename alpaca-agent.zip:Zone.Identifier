@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://claude.ai/chat/3f36a4aa-1d6c-4ecd-8430-afbf6710c90c
+HostUrl=https://claude.ai/api/organizations/70f9025a-2be4-4374-9b7c-1a41fccd585d/conversations/3f36a4aa-1d6c-4ecd-8430-afbf6710c90c/wiggle/download-file?path=%2Fmnt%2Fuser-data%2Foutputs%2Falpaca-agent.zip
