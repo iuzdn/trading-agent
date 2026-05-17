@@ -51,7 +51,7 @@ export const TOOLS = [
   },
   {
     name: 'compute_momentum',
-    description: 'Compute momentum indicators for a symbol: 20d/50d moving averages, 20d/50d returns, whether price is above each MA. Use this before making any buy/sell decision.',
+    description: 'Compute momentum indicators for a symbol: 20d/50d moving averages, 20d/50d/63d returns, whether price is above each MA. Primary ranking signal is ret63 (3-month return); use ret20 only as a tiebreaker. Call this before any buy/sell decision.',
     input_schema: {
       type: 'object',
       properties: {
@@ -62,7 +62,7 @@ export const TOOLS = [
   },
   {
     name: 'place_order',
-    description: 'Place a buy or sell market order. Use notional (USD amount) rather than qty when possible. ALWAYS check risk controls before calling this.',
+    description: 'Place a buy or sell market order. Use notional (USD amount) rather than qty when possible. One order per symbol per run. ALWAYS check risk controls before calling this.',
     input_schema: {
       type: 'object',
       properties: {
@@ -90,11 +90,15 @@ export const TOOLS = [
     description: 'Cancel all open orders. Use when entering risk-off / kill-switch mode.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'get_clock',
+    description: 'Check whether the US equity market is currently open. Crypto trades 24/7, but equity orders will be rejected when the market is closed. Call this before placing equity orders if uncertain.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 ];
 
 // ── Tool Executors ─────────────────────────────────────────────────────────
-export async function executeTool(name, input) {
-  const MAX_TRADE = parseFloat(process.env.MAX_TRADE_USD || '500');
+export async function executeTool(name, input, runState = {}) {
 
   switch (name) {
     case 'get_account': {
@@ -146,18 +150,75 @@ export async function executeTool(name, input) {
     }
 
     case 'compute_momentum': {
-      const bars = await alpaca.getBars(input.symbol, '1Day', 60);
+      // 80 bars covers 63-day return + buffer for missing days.
+      const bars = await alpaca.getBars(input.symbol, '1Day', 80);
       const momentum = alpaca.computeMomentum(bars);
       if (!momentum) return { error: 'Not enough data' };
       return { symbol: input.symbol, ...momentum };
     }
 
     case 'place_order': {
-      // Hard risk check
-      if (input.notional && input.notional > MAX_TRADE) {
-        return { error: `Blocked: notional $${input.notional} exceeds MAX_TRADE_USD $${MAX_TRADE}. Split the order or adjust config.` };
+      if (!runState.orderedSymbols) runState.orderedSymbols = new Set();
+      if (runState.orderedSymbols.has(input.symbol)) {
+        return { error: `Already placed an order for ${input.symbol} this run. One order per symbol per run.` };
       }
-      return alpaca.placeOrder(input);
+
+      if (input.side === 'buy') {
+        const isCrypto = input.symbol.includes('/');
+
+        // Block equity buys when the US market is closed (crypto trades 24/7).
+        if (!isCrypto) {
+          try {
+            const clock = await alpaca.getClock();
+            if (!clock.is_open) {
+              return { error: `Order rejected: US equity market is closed. Next open: ${clock.next_open}.` };
+            }
+          } catch (e) {
+            // Clock check is best-effort — don't block trading on Alpaca infra hiccups.
+          }
+        }
+
+        // Resolve notional from qty if needed, so cap math works either way.
+        let notional = input.notional ? parseFloat(input.notional) : null;
+        if (!notional && input.qty) {
+          try {
+            const trade = await alpaca.getLatestTrade(input.symbol);
+            const price = trade?.p ?? trade?.price;
+            if (price) notional = parseFloat(input.qty) * parseFloat(price);
+          } catch {}
+        }
+
+        if (notional) {
+          const acc = await alpaca.getAccount();
+          const equity = parseFloat(acc.equity);
+          const cash = parseFloat(acc.cash);
+          const maxPct = parseFloat(process.env.MAX_POSITION_PCT || '0.10');
+          const cap = equity * maxPct;
+
+          let existingValue = 0;
+          try {
+            const positions = await alpaca.getPositions();
+            const existing = positions.find(p => p.symbol === input.symbol);
+            if (existing) existingValue = parseFloat(existing.market_value);
+          } catch {}
+
+          const projected = existingValue + notional;
+          if (projected > cap) {
+            return {
+              error: `Order rejected: position would reach $${projected.toFixed(2)}, exceeds ${(maxPct * 100).toFixed(0)}% cap of $${cap.toFixed(2)} (equity $${equity.toFixed(2)}). Existing position: $${existingValue.toFixed(2)}; requested buy: $${notional.toFixed(2)}.`,
+            };
+          }
+          if (notional > cash) {
+            return {
+              error: `Order rejected: notional $${notional.toFixed(2)} exceeds available cash $${cash.toFixed(2)}.`,
+            };
+          }
+        }
+      }
+
+      const result = await alpaca.placeOrder(input);
+      runState.orderedSymbols.add(input.symbol);
+      return result;
     }
 
     case 'close_position': {
@@ -166,6 +227,16 @@ export async function executeTool(name, input) {
 
     case 'cancel_all_orders': {
       return alpaca.cancelAllOrders();
+    }
+
+    case 'get_clock': {
+      const clock = await alpaca.getClock();
+      return {
+        is_open: clock.is_open,
+        next_open: clock.next_open,
+        next_close: clock.next_close,
+        timestamp: clock.timestamp,
+      };
     }
 
     default:

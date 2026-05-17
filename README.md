@@ -7,13 +7,13 @@ A fully autonomous trading agent powered by **Claude AI** + **Alpaca API**. Impl
 ```
 Cron trigger (2x/day equities + daily crypto)
     ↓
-Claude (claude-sonnet-4) reasons through strategy
+Claude reasons through strategy (model configurable via ANTHROPIC_MODEL)
     ↓
 Tools: get_account, compute_momentum, place_order, close_position...
     ↓
 Alpaca API executes trades
     ↓
-Telegram alert with run summary
+Telegram alert with run summary + live commands available
 ```
 
 Claude runs an **agentic loop** — it calls tools, gets results, reasons about them, calls more tools, and continues until it's done. You don't need to be present.
@@ -30,35 +30,56 @@ npm install
 ```
 
 ### 2. Configure environment
-```bash
-cp .env.example .env
-# Edit .env with your keys
+
+Copy `.env.example` to `.env` and fill in your keys:
+
+```env
+# Anthropic
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=claude-sonnet-4-6   # or claude-opus-4-7 for stronger reasoning
+
+# Alpaca
+ALPACA_API_KEY=...
+ALPACA_SECRET_KEY=...
+ALPACA_BASE_URL=https://paper-api.alpaca.markets   # switch to https://api.alpaca.markets for live
+
+# Telegram (optional but recommended)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+
+# Risk controls
+MAX_POSITION_PCT=0.10        # max 10% of portfolio per position
+DAILY_LOSS_LIMIT_PCT=0.03    # kill-switch at 3% daily loss
+TRAILING_STOP_PCT=0.08       # close any position drawn down >8% from high
+PAPER_MODE=true              # set false only when ready for live
 ```
 
 **Keys you need:**
 - `ANTHROPIC_API_KEY` → [console.anthropic.com](https://console.anthropic.com)
-- `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` → [alpaca.markets](https://alpaca.markets) (Paper trading keys first!)
-- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` → Optional but recommended
+- `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` → [alpaca.markets](https://alpaca.markets) (use Paper keys first)
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` → optional, enables live control via Telegram
 
-### 3. Get Telegram alerts (optional)
+### 3. Get Telegram alerts + control (optional)
 1. Message [@BotFather](https://t.me/botfather) on Telegram → `/newbot`
 2. Copy the token to `TELEGRAM_BOT_TOKEN`
 3. Message your bot once, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`
 4. Copy the `chat.id` to `TELEGRAM_CHAT_ID`
 
+Once configured, you can control the agent from your phone — see [Telegram Commands](#telegram-commands) below.
+
 ### 4. Test run (paper mode)
 ```bash
 npm run now
 ```
-This runs the full agent cycle immediately. Watch the logs — Claude will explain every decision.
+Runs the full agent cycle immediately. Watch the logs — Claude explains every decision.
 
 ### 5. Start scheduler
 ```bash
 npm start
 ```
-Runs automatically:
+Runs automatically on:
 - **09:45 ET** weekdays (equities — after open)
-- **15:30 ET** weekdays (equities — before close)  
+- **15:30 ET** weekdays (equities — before close)
 - **08:00 UTC** daily (crypto)
 
 ---
@@ -71,10 +92,10 @@ Runs automatically:
 - Automatically recovers when trend turns positive.
 
 ### Equity Selection
-- Watchlist: SPY, QQQ, NVDA, MSFT, AAPL, AMZN, META, TSM, ASML
-- Ranks by 20-day return
+- Watchlist: SPY, QQQ, IWM, XLE, XLF, XLV, XLP, XLU, XLI, XLY, XLK, XLB, NVDA, MSFT
+- Ranks by **63-day return** (3-month momentum), with 20-day as tiebreaker
 - Only buys symbols above both MA20 and MA50
-- Targets top 3 qualifying symbols
+- Targets top 3 qualifying symbols, allocated equally from available cash
 
 ### Crypto Selection
 - Watchlist: BTC/USD, ETH/USD, SOL/USD
@@ -85,6 +106,8 @@ Runs automatically:
 - Exits positions that fall below MA50
 - Rotates into better-ranked symbols
 - Avoids unnecessary churn (holds qualifying positions)
+- **One order per symbol per run** — position size is capped by `MAX_POSITION_PCT`, never split across multiple orders
+- **Per-position trailing stop** — runs before each agent cycle, auto-closes anything drawn down more than `TRAILING_STOP_PCT` from its post-entry high. High-water marks persist in `state.json`.
 
 ---
 
@@ -93,37 +116,72 @@ Runs automatically:
 | Control | Default | Config key |
 |---------|---------|------------|
 | Max position size | 10% of portfolio | `MAX_POSITION_PCT` |
-| Max single order | $500 | `MAX_TRADE_USD` |
 | Daily loss kill-switch | -3% | `DAILY_LOSS_LIMIT_PCT` |
+| Per-position trailing stop | -8% from high | `TRAILING_STOP_PCT` |
 | Paper mode | ON | `PAPER_MODE` |
 
-**Kill-switch**: If daily P&L drops below `-3%`, the agent cancels all orders, closes all positions, sends a Telegram alert, and stops.
+**Position-size cap is enforced in code** (in [src/tools.js](src/tools.js) `place_order`), not just by the model. Buy orders that would push a position past the cap, or that exceed available cash, are rejected before reaching Alpaca.
+
+**Automatic kill-switch**: if daily P&L drops below `-3%`, the agent cancels all orders, closes all positions, sends a Telegram alert, and stops immediately. Checked eagerly at the start of every run, before the model gets a turn.
+
+**Trailing stop**: at the start of every run, the agent updates a per-symbol high-water mark and force-closes any position drawn down more than `TRAILING_STOP_PCT` from its high. Equity stops only fire while the US market is open; crypto stops fire 24/7.
+
+**Market hours**: equity buys are rejected when the US market is closed (Alpaca clock check). Scheduled equity cron runs skip entirely on holidays / early closes.
+
+---
+
+## Telegram Commands
+
+When the scheduler is running (`npm start`), the bot listens for commands from your configured chat. Only messages from `TELEGRAM_CHAT_ID` are accepted.
+
+| Command | What it does |
+|---------|-------------|
+| `/status` | Account equity, daily P&L, open positions, scheduler state |
+| `/stop` | Halts the agent's current reasoning loop — positions are untouched |
+| `/pause` | Suspends all scheduled cron runs until resumed |
+| `/resume` | Re-enables the cron schedule |
+| `/run` | Triggers an immediate agent run (works even while paused) |
+| `/close-positions` | Cancels all open orders and market-sells all positions |
+
+> `/stop` and `/pause` are independent. `/stop` interrupts a run in progress. `/pause` prevents future scheduled runs from starting. `/run` always works regardless of pause state.
+
+---
+
+## Choosing a Model
+
+Set `ANTHROPIC_MODEL` in `.env`:
+
+| Model | Speed | Cost | Best for |
+|-------|-------|------|----------|
+| `claude-haiku-4-5-20251001` | Fastest | Lowest | High-frequency testing |
+| `claude-sonnet-4-6` | Balanced | Medium | Default — daily trading |
+| `claude-opus-4-7` | Slowest | Highest | Complex market conditions |
 
 ---
 
 ## Going Live
 
-When you're ready to trade with real money:
-1. Run in paper mode for at least **4-6 weeks**
-2. Review trade logs and Telegram alerts
-3. Change `.env`:
+When you're ready to trade real money:
+1. Run in paper mode for at least **4–6 weeks**
+2. Review Telegram summaries and trade logs
+3. Update `.env`:
    ```
    ALPACA_BASE_URL=https://api.alpaca.markets
    PAPER_MODE=false
    ```
-4. Consider lowering `MAX_TRADE_USD` initially (e.g. $100)
+4. Start conservatively — lower `MAX_POSITION_PCT` (e.g. `0.05`) until you trust the system
 
 ---
 
 ## Customizing the Strategy
 
-Edit `src/agent.js` → `buildSystemPrompt()` to adjust:
+Edit [src/agent.js](src/agent.js) → `buildSystemPrompt()` to adjust:
 - Watchlists (add/remove symbols)
 - MA periods (default: 20/50 day)
 - Allocation rules
-- Rebalancing frequency
+- Rebalancing logic
 
-The strategy is expressed in plain English in the system prompt — Claude interprets it. You can iterate on it like you're writing a spec.
+The strategy is expressed in plain English in the system prompt — Claude interprets it. You can iterate on it like writing a spec.
 
 ---
 
@@ -131,12 +189,11 @@ The strategy is expressed in plain English in the system prompt — Claude inter
 
 ```
 alpaca-agent/
-├── index.js          # Entry point + cron scheduler
+├── index.js          # Entry point, cron scheduler, Telegram command handlers
 ├── src/
-│   ├── agent.js      # Claude agentic loop
-│   ├── tools.js      # Tool definitions + executors
+│   ├── agent.js      # Claude agentic loop + stop signal
+│   ├── tools.js      # Tool definitions + executors (with per-run order dedup)
 │   ├── alpaca.js     # Alpaca REST API client
-│   └── telegram.js   # Alert notifications
-├── .env.example
+│   └── telegram.js   # Alerts + command listener
 └── README.md
 ```
