@@ -25,3 +25,10 @@ build/
 
 # Agent runtime state
 state.json
+
+# Backtest output
+backtest-out/
+
+# Phase 1 data (journal, state snapshots, response cache)
+data/
+
