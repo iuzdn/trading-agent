@@ -1,0 +1,12 @@
+{
+  "maxPositionPctOfEquity": 15,
+  "maxSectorConcentrationPct": 35,
+  "maxLeverage": 1.0,
+  "maxDailyLossPct": 2,
+  "maxNewTradesPerDay": 3,
+  "noTradeMinutesAfterOpen": 30,
+  "noTradeMinutesBeforeClose": 30,
+  "cooldownHoursAfterStopOut": 24,
+  "fatFingerMultiplier": 2.0,
+  "pmHoldConfidenceFloor": 55
+}
