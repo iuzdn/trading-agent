@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { childLogger } from '../lib/logger.js';
+import { appendPipelineResult } from '../lib/journal.js';
 import { researchAnalyst } from './researchAnalyst.js';
 import { technicalAnalyst } from './technicalAnalyst.js';
 import { portfolioManager } from './portfolioManager.js';
@@ -31,6 +32,8 @@ export interface PipelineOptions {
   dryRun?: boolean;
   /** Lookback for news. Defaults to 30 days. */
   newsLookbackDays?: number;
+  /** Skip writing to the trade journal. Defaults to false. */
+  skipJournal?: boolean;
 }
 
 /**
@@ -52,7 +55,44 @@ export async function runResearchPipeline(
 
   const log = childLogger({ requestId: request.requestId, ticker: request.ticker });
   const t0 = Date.now();
+  const startedAt = new Date(t0).toISOString();
   log.info({ trigger: request.triggerReason }, 'pipeline start');
+
+  const finalize = async (
+    research: ResearchReport,
+    technical: TechnicalReport,
+    proposal: TradeProposal,
+    execution: ExecutionReport | undefined,
+    decision: Decision,
+  ): Promise<PipelineResult> => {
+    const finishedAt = new Date().toISOString();
+    const result: PipelineResult = {
+      request,
+      research,
+      technical,
+      proposal,
+      ...(execution ? { execution } : {}),
+      decision,
+      startedAt,
+      finishedAt,
+      latencyMs: Date.now() - t0,
+    };
+    if (!options.skipJournal) {
+      try {
+        await appendPipelineResult(result);
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          'journal append failed — continuing',
+        );
+      }
+    }
+    log.info(
+      { kind: decision.kind, latencyMs: result.latencyMs },
+      'pipeline done',
+    );
+    return result;
+  };
 
   const research = await researchAnalyst({
     ticker: request.ticker,
@@ -67,23 +107,12 @@ export async function runResearchPipeline(
 
   // Early exit: low analyst confidence (ARCHITECTURE §6).
   if (research.confidence < 30 || technical.confidence < 30) {
-    const decision: Decision = {
+    log.info({ research: research.confidence, technical: technical.confidence }, 'low confidence');
+    return finalize(research, technical, synthEmptyProposal(request.ticker), undefined, {
       kind: 'NO_TRADE',
       reason: 'low_analyst_confidence',
       agentTrace: ['researchAnalyst', 'technicalAnalyst'],
-    };
-    log.info({ research: research.confidence, technical: technical.confidence }, decision.reason);
-    const finishedAt = new Date().toISOString();
-    return {
-      request,
-      research,
-      technical,
-      proposal: synthEmptyProposal(request.ticker),
-      decision,
-      startedAt: new Date(t0).toISOString(),
-      finishedAt,
-      latencyMs: Date.now() - t0,
-    };
+    });
   }
 
   const proposal = await portfolioManager({
@@ -93,61 +122,29 @@ export async function runResearchPipeline(
   });
 
   if (proposal.action === 'HOLD') {
-    const decision: Decision = {
+    log.info({ confidence: proposal.confidence }, 'PM chose HOLD');
+    return finalize(research, technical, proposal, undefined, {
       kind: 'NO_TRADE',
       reason: 'pm_chose_hold',
       agentTrace: ['researchAnalyst', 'technicalAnalyst', 'portfolioManager'],
-    };
-    log.info({ confidence: proposal.confidence }, 'PM chose HOLD');
-    return {
-      request,
-      research,
-      technical,
-      proposal,
-      decision,
-      startedAt: new Date(t0).toISOString(),
-      finishedAt: new Date().toISOString(),
-      latencyMs: Date.now() - t0,
-    };
+    });
   }
 
   if (options.dryRun) {
     log.info('dryRun: skipping executor');
-    const decision: Decision = {
+    return finalize(research, technical, proposal, undefined, {
       kind: 'NO_TRADE',
       reason: 'dry_run',
       agentTrace: ['researchAnalyst', 'technicalAnalyst', 'portfolioManager'],
-    };
-    return {
-      request,
-      research,
-      technical,
-      proposal,
-      decision,
-      startedAt: new Date(t0).toISOString(),
-      finishedAt: new Date().toISOString(),
-      latencyMs: Date.now() - t0,
-    };
+    });
   }
 
   const execution = await executor({ proposal, requestId: request.requestId });
-  const decision: Decision = { kind: 'TRADE', proposal, execution };
-  const finishedAt = new Date().toISOString();
-  log.info(
-    { action: proposal.action, executionStatus: execution.status, latencyMs: Date.now() - t0 },
-    'pipeline done',
-  );
-  return {
-    request,
-    research,
-    technical,
+  return finalize(research, technical, proposal, execution, {
+    kind: 'TRADE',
     proposal,
     execution,
-    decision,
-    startedAt: new Date(t0).toISOString(),
-    finishedAt,
-    latencyMs: Date.now() - t0,
-  };
+  });
 }
 
 function synthEmptyProposal(ticker: string): TradeProposal {
