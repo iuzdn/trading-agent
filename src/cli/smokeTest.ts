@@ -20,18 +20,25 @@ import { getPortfolioState, tradingMode } from '../tools/alpaca.js';
  * Run with: npx tsx src/cli/smokeTest.ts [TICKER]
  */
 
-const REQUIRED_ENV = [
+/**
+ * Each entry is either a single var name or an array of acceptable aliases
+ * (e.g. ALPACA_API_SECRET vs the legacy ALPACA_SECRET_KEY used by the JS code).
+ */
+const REQUIRED_ENV: Array<string | string[]> = [
   'ANTHROPIC_API_KEY',
   'ALPACA_API_KEY',
-  'ALPACA_API_SECRET',
+  ['ALPACA_API_SECRET', 'ALPACA_SECRET_KEY'],
   'FMP_API_KEY',
   'FINNHUB_API_KEY',
 ];
 
 function checkEnv(): string[] {
   const missing: string[] = [];
-  for (const k of REQUIRED_ENV) {
-    if (!process.env[k]) missing.push(k);
+  for (const entry of REQUIRED_ENV) {
+    const names = Array.isArray(entry) ? entry : [entry];
+    if (!names.some((n) => process.env[n])) {
+      missing.push(names.join(' or '));
+    }
   }
   return missing;
 }

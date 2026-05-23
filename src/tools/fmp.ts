@@ -1,7 +1,10 @@
 import type { ClaudeToolSpec } from '../lib/claude.js';
 import { withCache, TTL } from '../lib/cache.js';
 
-const BASE = 'https://financialmodelingprep.com/api/v3';
+// FMP retired the /api/v3 endpoints in August 2025. New users only have
+// access to the "stable" API. See:
+// https://site.financialmodelingprep.com/developer/docs/stable
+const BASE = 'https://financialmodelingprep.com/stable';
 
 function key(): string {
   const k = process.env.FMP_API_KEY;
@@ -9,9 +12,9 @@ function key(): string {
   return k;
 }
 
-async function fmpGet<T>(path: string): Promise<T> {
-  const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${BASE}${path}${sep}apikey=${key()}`);
+async function fmpGet<T>(path: string, params: Record<string, string | number>): Promise<T> {
+  const search = new URLSearchParams({ ...params, apikey: key() } as Record<string, string>);
+  const res = await fetch(`${BASE}${path}?${search.toString()}`);
   if (!res.ok) throw new Error(`FMP ${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -26,23 +29,28 @@ export interface Fundamentals {
   asOf: string;
 }
 
+interface RatiosTTM {
+  priceToEarningsRatioTTM?: number;
+  debtToEquityRatioTTM?: number;
+}
+
+interface KeyMetricsTTM {
+  marketCap?: number;
+  evToEBITDATTM?: number;
+  freeCashFlowYieldTTM?: number;
+}
+
+interface IncomeStatementRow {
+  revenue: number;
+  date: string;
+}
+
 export async function getFinancials(ticker: string): Promise<Fundamentals> {
   return withCache('get_financials', { ticker }, TTL.DAY, async () => {
     const [ratios, keyMetrics, income] = await Promise.all([
-      fmpGet<
-        Array<{
-          priceEarningsRatio?: number;
-          enterpriseValueMultiple?: number;
-          debtEquityRatio?: number;
-        }>
-      >(`/ratios-ttm/${ticker}`),
-      fmpGet<
-        Array<{
-          marketCapTTM?: number;
-          freeCashFlowYieldTTM?: number;
-        }>
-      >(`/key-metrics-ttm/${ticker}`),
-      fmpGet<Array<{ revenue: number; date: string }>>(`/income-statement/${ticker}?limit=5`),
+      fmpGet<RatiosTTM[]>('/ratios-ttm', { symbol: ticker }),
+      fmpGet<KeyMetricsTTM[]>('/key-metrics-ttm', { symbol: ticker }),
+      fmpGet<IncomeStatementRow[]>('/income-statement', { symbol: ticker, limit: 5 }),
     ]);
 
     const r = ratios[0] ?? {};
@@ -53,12 +61,12 @@ export async function getFinancials(ticker: string): Promise<Fundamentals> {
     }
 
     return {
-      pe: r.priceEarningsRatio ?? null,
-      evEbitda: r.enterpriseValueMultiple ?? null,
+      pe: r.priceToEarningsRatioTTM ?? null,
+      evEbitda: km.evToEBITDATTM ?? null,
       revenueGrowthYoY,
       fcfYield: km.freeCashFlowYieldTTM ?? null,
-      debtToEquity: r.debtEquityRatio ?? null,
-      marketCap: km.marketCapTTM ?? null,
+      debtToEquity: r.debtToEquityRatioTTM ?? null,
+      marketCap: km.marketCap ?? null,
       asOf: new Date().toISOString(),
     };
   });
@@ -83,17 +91,26 @@ export interface EarningsRow {
   surprise: number | null;
 }
 
+interface EarningsApiRow {
+  date: string;
+  epsActual: number | null;
+  epsEstimated: number | null;
+}
+
 export async function getEarningsHistory(ticker: string): Promise<EarningsRow[]> {
   return withCache('get_earnings_history', { ticker }, TTL.DAY, async () => {
-    const raw = await fmpGet<
-      Array<{ date: string; eps: number | null; epsEstimated: number | null }>
-    >(`/historical/earning_calendar/${ticker}?limit=8`);
+    const raw = await fmpGet<EarningsApiRow[]>('/earnings', {
+      symbol: ticker,
+      limit: 8,
+    });
     return raw.map((r) => ({
       date: r.date,
-      epsActual: r.eps,
+      epsActual: r.epsActual,
       epsEstimated: r.epsEstimated,
       surprise:
-        r.eps != null && r.epsEstimated ? (r.eps - r.epsEstimated) / Math.abs(r.epsEstimated) : null,
+        r.epsActual != null && r.epsEstimated
+          ? (r.epsActual - r.epsEstimated) / Math.abs(r.epsEstimated)
+          : null,
     }));
   });
 }
