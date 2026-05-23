@@ -99,22 +99,38 @@ export const TradeProposalSchema = z
     action: TradeActionSchema,
     sizeUsd: z.number().nonnegative(),
     sizePctOfEquity: z.number().min(0).max(100),
-    entryPrice: z.number().positive(),
-    stopLoss: z.number().positive(),
-    takeProfit: z.number().positive(),
-    timeHorizonDays: z.number().int().positive().max(365),
+    // Price/horizon fields are required for BUY/SELL/CLOSE and must be positive
+    // there; for HOLD the PM may legitimately emit 0 since no order is placed.
+    // The refinements below enforce positivity + ordering only for non-HOLD.
+    entryPrice: z.number().nonnegative(),
+    stopLoss: z.number().nonnegative(),
+    takeProfit: z.number().nonnegative(),
+    timeHorizonDays: z.number().int().nonnegative().max(365),
     rationale: z.string().min(20),
     confidence: z.number().min(0).max(100),
     agentTrace: z.array(z.string()).min(1),
   })
   .refine(
-    (p) => p.action === 'HOLD' || p.stopLoss < p.entryPrice || p.action === 'SELL',
-    { message: 'stopLoss must be below entryPrice for a long (BUY)' },
+    (p) =>
+      p.action === 'HOLD' ||
+      (p.entryPrice > 0 && p.stopLoss > 0 && p.takeProfit > 0 && p.timeHorizonDays > 0),
+    {
+      message:
+        'BUY/SELL/CLOSE require positive entryPrice, stopLoss, takeProfit, and timeHorizonDays',
+    },
   )
-  .refine(
-    (p) => p.action === 'HOLD' || p.takeProfit > p.entryPrice || p.action === 'SELL',
-    { message: 'takeProfit must be above entryPrice for a long (BUY)' },
-  );
+  .refine((p) => p.action !== 'BUY' || p.stopLoss < p.entryPrice, {
+    message: 'BUY: stopLoss must be below entryPrice',
+  })
+  .refine((p) => p.action !== 'BUY' || p.takeProfit > p.entryPrice, {
+    message: 'BUY: takeProfit must be above entryPrice',
+  })
+  .refine((p) => p.action !== 'SELL' || p.stopLoss > p.entryPrice, {
+    message: 'SELL: stopLoss must be above entryPrice (short)',
+  })
+  .refine((p) => p.action !== 'SELL' || p.takeProfit < p.entryPrice, {
+    message: 'SELL: takeProfit must be below entryPrice (short)',
+  });
 export type TradeProposal = z.infer<typeof TradeProposalSchema>;
 
 export const RiskAssessmentSchema = z.object({

@@ -99,9 +99,10 @@ interface EarningsApiRow {
 
 export async function getEarningsHistory(ticker: string): Promise<EarningsRow[]> {
   return withCache('get_earnings_history', { ticker }, TTL.DAY, async () => {
+    // Free FMP tier caps limit at 5. Paid tiers allow more; bump in Phase 2.
     const raw = await fmpGet<EarningsApiRow[]>('/earnings', {
       symbol: ticker,
-      limit: 8,
+      limit: 5,
     });
     return raw.map((r) => ({
       date: r.date,
@@ -118,7 +119,7 @@ export async function getEarningsHistory(ticker: string): Promise<EarningsRow[]>
 export const getEarningsHistoryTool: ClaudeToolSpec = {
   name: 'get_earnings_history',
   description:
-    'Fetch the last 8 quarters of EPS actuals vs estimates for a ticker, including surprise percentage.',
+    'Fetch the last 5 quarters of EPS actuals vs estimates for a ticker, including surprise percentage.',
   input_schema: {
     type: 'object',
     properties: { ticker: { type: 'string' } },
