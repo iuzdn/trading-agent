@@ -1,6 +1,13 @@
 # 🤖 Alpaca Autonomous Trading Agent
 
-A fully autonomous trading agent powered by **Claude AI** + **Alpaca API**. Implements a Dual Momentum strategy with regime filtering across US equities and crypto.
+A fully autonomous trading agent powered by **Claude AI** + **Alpaca API**. Paper trading first, always.
+
+The repo now contains **two layers**:
+
+1. **Execution layer (JS)** — the original single-agent **Dual Momentum + Regime Filter** strategy that runs on a cron and trades US equities and crypto. Documented below, starting at [How It Works](#how-it-works).
+2. **Research layer (TypeScript)** — a new **hierarchical multi-agent research & decision pipeline** that analyzes a single ticker, debates a thesis, and proposes a paper trade. See [Multi-Agent Research Layer](#multi-agent-research-layer-new). Full spec lives in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+The two layers are independent entrypoints today — the legacy strategy keeps trading on schedule, while the research pipeline is driven on demand via `/research TICKER`.
 
 ## How It Works
 
@@ -38,21 +45,23 @@ Copy `.env.example` to `.env` and fill in your keys:
 ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=claude-sonnet-4-6   # or claude-opus-4-7 for stronger reasoning
 
-# Alpaca
+# Alpaca (shared by both layers)
 ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets   # switch to https://api.alpaca.markets for live
+ALPACA_API_SECRET=...
+ALPACA_PAPER=true
+TRADING_MODE=paper           # paper | live — going live needs TRADING_MODE=live AND ALPACA_PAPER=false
 
 # Telegram (optional but recommended)
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 
-# Risk controls
+# Risk controls (execution layer)
 MAX_POSITION_PCT=0.10        # max 10% of portfolio per position
 DAILY_LOSS_LIMIT_PCT=0.03    # kill-switch at 3% daily loss
 TRAILING_STOP_PCT=0.08       # close any position drawn down >8% from high
-PAPER_MODE=true              # set false only when ready for live
 ```
+
+> **Migration note:** the broker env vars are now shared by both layers. The old names still work as deprecated fallbacks — `ALPACA_SECRET_KEY` (→ `ALPACA_API_SECRET`), and `PAPER_MODE=false` / `ALPACA_BASE_URL` (→ `ALPACA_PAPER` + `TRADING_MODE`).
 
 **Keys you need:**
 - `ANTHROPIC_API_KEY` → [console.anthropic.com](https://console.anthropic.com)
@@ -164,10 +173,10 @@ Set `ANTHROPIC_MODEL` in `.env`:
 When you're ready to trade real money:
 1. Run in paper mode for at least **4–6 weeks**
 2. Review Telegram summaries and trade logs
-3. Update `.env`:
+3. Update `.env` (both flags are required — this is a deliberate double opt-in):
    ```
-   ALPACA_BASE_URL=https://api.alpaca.markets
-   PAPER_MODE=false
+   TRADING_MODE=live
+   ALPACA_PAPER=false
    ```
 4. Start conservatively — lower `MAX_POSITION_PCT` (e.g. `0.05`) until you trust the system
 
@@ -185,15 +194,90 @@ The strategy is expressed in plain English in the system prompt — Claude inter
 
 ---
 
+## Multi-Agent Research Layer (new)
+
+A second, independent pipeline (TypeScript) that researches **one ticker** end to end and proposes a paper trade. Where the Dual Momentum executor above runs a fixed rules-based strategy on a schedule, this layer reasons about an individual name on demand — gathering fundamentals, news, and price action, then synthesizing a sized position recommendation.
+
+> **Status: Phase 1.** The research → technical → PM → executor path is wired in linear mode. The Macro Analyst, Devil's Advocate, and Risk Manager agents are specced in [ARCHITECTURE.md](ARCHITECTURE.md) for Phase 2 and not yet implemented. Paper trading only.
+
+### Pipeline
+
+```
+/research TICKER  (Telegram command or CLI)
+    ↓
+Orchestrator  (linear, src/agents/orchestrator.ts)
+    ↓
+Research Analyst   →  fundamentals + news/sentiment   (Sonnet, FMP + Finnhub)
+Technical Analyst  →  trend, RSI/MACD, key levels      (Haiku, Alpaca bars)
+    ↓   (early exit if either confidence < 30)
+PM / Decision Agent  →  TradeProposal: action, size, entry, stop, target
+    ↓   (HOLD ⇒ no trade)
+Execution Agent  →  Alpaca paper order
+    ↓
+JSONL trade journal  →  data/journal/YYYY-MM.jsonl  (full agent trace)
+    ↓
+Telegram decision card
+```
+
+Every numerical claim an agent makes must trace to a tool call, and every agent input/output is validated with Zod at the boundary (see [src/types/contracts.ts](src/types/contracts.ts)). System prompts live as Markdown in [src/config/prompts/](src/config/prompts/), never inline.
+
+### Agents (Phase 1)
+
+| Agent | File | Model | Role |
+|-------|------|-------|------|
+| Orchestrator | [src/agents/orchestrator.ts](src/agents/orchestrator.ts) | — | Sequences the pipeline, applies confidence floors, writes the journal |
+| Research Analyst | [src/agents/researchAnalyst.ts](src/agents/researchAnalyst.ts) | Sonnet | Fundamentals + news/sentiment, grounded in FMP/Finnhub tool calls |
+| Technical Analyst | [src/agents/technicalAnalyst.ts](src/agents/technicalAnalyst.ts) | Haiku | Interprets deterministically-computed indicators (RSI, MACD, MAs) |
+| PM / Decision | [src/agents/portfolioManager.ts](src/agents/portfolioManager.ts) | Sonnet | Synthesizes a sized proposal with stop + target; `<55` confidence ⇒ HOLD |
+| Execution | [src/agents/executor.ts](src/agents/executor.ts) | Haiku | Routes the approved proposal to Alpaca (paper) |
+
+### Commands
+
+```bash
+npm run dev              # start the Telegram listener for /research (tsx watch src/index.ts)
+npm run research TICKER  # one-shot research run from the CLI
+npm run smoke            # end-to-end smoke test against the paper account
+npm test                 # vitest
+npm run typecheck        # tsc --noEmit
+```
+
+On Telegram, `/research TICKER` triggers a run and replies with a decision card. Only one run is in flight at a time.
+
+### Environment
+
+In addition to the Alpaca/Telegram keys above, the research layer reads:
+
+```env
+ANTHROPIC_API_KEY=...
+FMP_API_KEY=...          # Financial Modeling Prep — fundamentals & earnings
+FINNHUB_API_KEY=...      # news & analyst ratings
+TRADING_MODE=paper       # paper | live (live requires explicit opt-in)
+```
+
+External API calls are wrapped in a cache layer ([src/lib/cache.ts](src/lib/cache.ts)) to save cost and respect free-tier rate limits during iteration. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the per-tool rate-limit and TTL table.
+
+---
+
 ## Project Structure
 
 ```
 alpaca-agent/
-├── index.js          # Entry point, cron scheduler, Telegram command handlers
+├── index.js              # Execution layer entry: cron scheduler + Telegram handlers
+├── ARCHITECTURE.md       # Full spec for the multi-agent research layer
 ├── src/
-│   ├── agent.js      # Claude agentic loop + stop signal
-│   ├── tools.js      # Tool definitions + executors (with per-run order dedup)
-│   ├── alpaca.js     # Alpaca REST API client
-│   └── telegram.js   # Alerts + command listener
+│   ├── agent.js          # (execution) Claude agentic loop + stop signal
+│   ├── tools.js          # (execution) Dual Momentum tool definitions + executors
+│   ├── alpaca.js         # (execution) Alpaca REST client
+│   ├── telegram.js       # (execution) alerts + command listener
+│   │
+│   ├── index.ts          # Research layer entry: Telegram /research listener
+│   ├── agents/           # orchestrator, research/technical analysts, PM, executor
+│   ├── tools/            # alpaca, fmp, finnhub, indicators + registry (index.ts)
+│   ├── lib/              # claude wrapper, cache, journal, logger, telegram, sizing
+│   ├── types/            # contracts.ts — all Zod schemas + inferred TS types
+│   ├── config/
+│   │   ├── prompts/      # one .md system prompt per agent
+│   │   └── riskRules.json
+│   └── cli/              # research.ts (one-shot), smokeTest.ts
 └── README.md
 ```

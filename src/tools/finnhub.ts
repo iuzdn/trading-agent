@@ -9,11 +9,26 @@ function key(): string {
   return k;
 }
 
+/** Retry transient upstream failures (502/503/504 gateway, 429 rate limit). */
+const RETRYABLE = new Set([429, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+
 async function fhGet<T>(path: string): Promise<T> {
   const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${BASE}${path}${sep}token=${key()}`);
-  if (!res.ok) throw new Error(`Finnhub ${res.status}: ${await res.text()}`);
-  return res.json() as Promise<T>;
+  const url = `${BASE}${path}${sep}token=${key()}`;
+
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res.json() as Promise<T>;
+
+    // Keep the error short — a 504 returns a full Cloudflare HTML page.
+    const body = (await res.text()).replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+      continue;
+    }
+    throw new Error(`Finnhub ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}): ${body}`);
+  }
 }
 
 export interface NewsItem {

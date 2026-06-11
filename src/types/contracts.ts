@@ -76,6 +76,9 @@ export const TechnicalReportSchema = z.object({
   }),
   signal: z.enum(['BUY', 'HOLD', 'SELL']),
   confidence: z.number().min(0).max(100),
+  // One- to two-sentence interpretation of the indicators. Presentational —
+  // optional so a missing commentary never aborts a decision.
+  commentary: z.string().min(10).optional(),
 });
 export type TechnicalReport = z.infer<typeof TechnicalReportSchema>;
 

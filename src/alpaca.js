@@ -1,10 +1,30 @@
 import fetch from 'node-fetch';
 
-const BASE_URL = process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
+const PAPER_URL = 'https://paper-api.alpaca.markets';
+const LIVE_URL = 'https://api.alpaca.markets';
 const DATA_URL = 'https://data.alpaca.markets';
+
+/**
+ * Single paper/live rule, shared with the TS research layer (src/tools/alpaca.ts).
+ * Default to paper. Going live requires the canonical double-opt-in
+ * (TRADING_MODE=live AND ALPACA_PAPER=false). The legacy PAPER_MODE=false flag
+ * is still honored as a deprecated single-flag opt-in for older .env files.
+ */
+export function isPaperTrading() {
+  const liveByMode =
+    process.env.TRADING_MODE === 'live' && process.env.ALPACA_PAPER === 'false';
+  const liveByLegacy = process.env.PAPER_MODE === 'false';
+  return !(liveByMode || liveByLegacy);
+}
+
+// Canonical secret name is ALPACA_API_SECRET; ALPACA_SECRET_KEY kept as fallback.
+// ALPACA_BASE_URL, if explicitly set, overrides the paper/live URL selection.
+const BASE_URL =
+  process.env.ALPACA_BASE_URL || (isPaperTrading() ? PAPER_URL : LIVE_URL);
 const HEADERS = {
   'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
-  'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY,
+  'APCA-API-SECRET-KEY':
+    process.env.ALPACA_API_SECRET || process.env.ALPACA_SECRET_KEY,
   'Content-Type': 'application/json',
 };
 
@@ -44,6 +64,33 @@ export async function getBars(symbol, timeframe = '1Day', limit = 60) {
     : `${DATA_URL}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}&start=${start}`;
   const data = await request(endpoint);
   return isCrypto ? data.bars[symbol] : data.bars;
+}
+
+// Backtest-only: fetch a full date range with pagination. Production getBars()
+// is hard-capped at 120 days because the live agent only ever needs the recent
+// window for momentum; the backtest needs years.
+export async function getHistoricalBars(symbol, start, end, timeframe = '1Day') {
+  const isCrypto = symbol.includes('/');
+  const base = isCrypto
+    ? `${DATA_URL}/v1beta3/crypto/us/bars`
+    : `${DATA_URL}/v2/stocks/${symbol}/bars`;
+  const out = [];
+  let pageToken = null;
+  do {
+    const params = new URLSearchParams({
+      timeframe,
+      start,
+      end,
+      limit: '10000',
+    });
+    if (isCrypto) params.set('symbols', symbol);
+    if (pageToken) params.set('page_token', pageToken);
+    const data = await request(`${base}?${params.toString()}`);
+    const bars = isCrypto ? (data.bars?.[symbol] || []) : (data.bars || []);
+    out.push(...bars);
+    pageToken = data.next_page_token || null;
+  } while (pageToken);
+  return out;
 }
 
 export async function getLatestQuote(symbol) {

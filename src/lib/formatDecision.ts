@@ -1,17 +1,28 @@
 import type { PipelineResult } from '../agents/orchestrator.js';
+import { sanitizeMarkdownV1 } from './telegram.js';
+
+export interface FormatOptions {
+  /**
+   * Escape LLM-generated prose for Telegram's legacy Markdown parser.
+   * Defaults to true (the Telegram path). Console callers pass false so the
+   * output isn't littered with backslashes.
+   */
+  escapeProse?: boolean;
+}
 
 /**
- * Compact Telegram summary card for a pipeline result. Plain Markdown
- * (the v1 Telegram dialect), kept short enough to fit one message.
+ * Telegram summary card for a pipeline result. Plain Markdown (the v1 dialect).
+ * Includes a snapshot line per agent plus each agent's reasoning prose.
  */
-export function formatDecisionCard(r: PipelineResult): string {
+export function formatDecisionCard(r: PipelineResult, opts: FormatOptions = {}): string {
+  const esc = opts.escapeProse === false ? (s: string) => s : sanitizeMarkdownV1;
   const ticker = r.request.ticker;
   const elapsed = (r.latencyMs / 1000).toFixed(1);
   const lines: string[] = [];
   lines.push(`*Research: ${ticker}*  _${r.request.triggerReason}_`);
   lines.push('');
 
-  // Analyst snapshot
+  // ── Snapshot ──────────────────────────────────────────────────────────
   const sLabel = r.research.sentiment.label;
   const sentEmoji = sLabel === 'bullish' ? '🟢' : sLabel === 'bearish' ? '🔴' : '⚪️';
   lines.push(
@@ -21,11 +32,25 @@ export function formatDecisionCard(r: PipelineResult): string {
   lines.push(
     `${tEmoji} *Technical:* ${r.technical.signal} ${r.technical.trend}  •  RSI ${r.technical.rsi14.toFixed(0)}  MACD ${r.technical.macdSignal}`,
   );
-  lines.push('');
 
-  // Decision
+  // ── Reasoning ─────────────────────────────────────────────────────────
+  lines.push('');
+  lines.push('🧠 *Reasoning*');
+  lines.push(`*Research —* ${esc(r.research.thesis)}`);
+  if (r.technical.commentary) {
+    lines.push(`*Technical —* ${esc(r.technical.commentary)}`);
+  }
+  // The PM rationale only exists for a real proposal (not the low-confidence
+  // early-exit placeholder). Show it whenever the PM actually ran.
+  const pmRan = r.proposal.agentTrace.includes('portfolioManager');
+  if (pmRan && r.proposal.rationale) {
+    lines.push(`*Decision —* ${esc(r.proposal.rationale)}`);
+  }
+
+  // ── Outcome ───────────────────────────────────────────────────────────
+  lines.push('');
   if (r.decision.kind === 'NO_TRADE') {
-    lines.push(`⏸ *No trade* — _${r.decision.reason}_`);
+    lines.push(`⏸ *No trade* — _${esc(r.decision.reason)}_`);
   } else {
     const p = r.proposal;
     const e = r.execution;

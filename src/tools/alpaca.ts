@@ -7,11 +7,14 @@ const LIVE_URL = 'https://api.alpaca.markets';
 const DATA_URL = 'https://data.alpaca.markets';
 
 function isPaper(): boolean {
-  // Default to paper unless ALPACA_PAPER is explicitly 'false' AND TRADING_MODE is 'live'.
-  const paperEnv = process.env.ALPACA_PAPER;
-  const mode = process.env.TRADING_MODE;
-  if (mode !== 'live') return true;
-  return paperEnv !== 'false';
+  // Shared paper/live rule (mirrors src/alpaca.js isPaperTrading).
+  // Default to paper. Going live requires the double-opt-in
+  // (TRADING_MODE=live AND ALPACA_PAPER=false). The legacy PAPER_MODE=false
+  // flag is honored as a deprecated single-flag opt-in for older .env files.
+  const liveByMode =
+    process.env.TRADING_MODE === 'live' && process.env.ALPACA_PAPER === 'false';
+  const liveByLegacy = process.env.PAPER_MODE === 'false';
+  return !(liveByMode || liveByLegacy);
 }
 
 function baseUrl(): string {

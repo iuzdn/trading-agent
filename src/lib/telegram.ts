@@ -15,6 +15,23 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
 }
 
+/**
+ * Sanitize prose for Telegram's legacy `Markdown` parse mode (what sendMessage
+ * uses). Legacy Markdown does NOT honor backslash escapes, so the only safe
+ * way to neutralize entity-opening characters in LLM-generated prose is to
+ * substitute them with visually similar non-reserved characters. Without this,
+ * a stray `_` or `*` leaves an emphasis span unclosed and Telegram returns 400
+ * ("can't parse entities").
+ */
+function sanitizeMarkdownV1(text: string): string {
+  return text
+    .replace(/\*/g, '•')   // bullet — won't open bold
+    .replace(/_/g, ' ')    // space — won't open italic
+    .replace(/`/g, "'")    // apostrophe — won't open code
+    .replace(/\[/g, '(')   // paren — won't open link
+    .replace(/\]/g, ')');
+}
+
 export async function sendMessage(text: string, opts: { parseMode?: 'Markdown' | 'MarkdownV2' } = {}): Promise<void> {
   const token = botToken();
   const chat = chatId();
@@ -100,4 +117,4 @@ export async function startCommandListener(handlers: PrefixHandler[]): Promise<v
   }
 }
 
-export { escapeMarkdown };
+export { escapeMarkdown, sanitizeMarkdownV1 };

@@ -30,7 +30,7 @@ function buildSystemPrompt() {
   const maxPct = process.env.MAX_POSITION_PCT || '0.10';
   const lossLimit = process.env.DAILY_LOSS_LIMIT_PCT || '0.03';
   const trailPct = process.env.TRAILING_STOP_PCT || '0.08';
-  const isPaper = process.env.PAPER_MODE !== 'false';
+  const isPaper = alpaca.isPaperTrading();
 
   return `You are an autonomous trading agent running on ${isPaper ? 'PAPER (simulated)' : '⚠️ LIVE'} Alpaca account.
 

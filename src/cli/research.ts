@@ -30,7 +30,7 @@ if (tradingMode() === 'live') {
       { dryRun },
     );
     // Human-readable summary to stdout.
-    console.log('\n' + formatDecisionCard(result) + '\n');
+    console.log('\n' + formatDecisionCard(result, { escapeProse: false }) + '\n');
     // Full result available via logger debug for traceability.
     logger.debug({ result }, 'pipeline result');
     process.exit(0);

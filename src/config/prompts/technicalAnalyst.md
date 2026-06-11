@@ -25,7 +25,8 @@ Emit exactly one fenced JSON block matching this schema:
   "macdSignal": "bullish|bearish|neutral",
   "keyLevels": { "support": [number], "resistance": [number] },
   "signal": "BUY|HOLD|SELL",
-  "confidence": 0..100
+  "confidence": 0..100,
+  "commentary": "1–2 sentences explaining the read: how trend, momentum, MACD and RSI combine to justify the signal and confidence."
 }
 ```
 

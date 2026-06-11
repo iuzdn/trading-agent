@@ -4,7 +4,7 @@ import { runAgent, requestStop } from './src/agent.js';
 import { sendAlert, startCommandListener, formatRunSummary } from './src/telegram.js';
 import * as alpaca from './src/alpaca.js';
 
-const PAPER_MODE = process.env.PAPER_MODE !== 'false';
+const PAPER_MODE = alpaca.isPaperTrading();
 
 console.log(`
 ╔══════════════════════════════════════════╗

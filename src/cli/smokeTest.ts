@@ -103,7 +103,7 @@ const ticker = process.argv[2] ?? 'NVDA';
     process.exit(4);
   }
 
-  console.log(formatDecisionCard(result));
+  console.log(formatDecisionCard(result, { escapeProse: false }));
   console.log();
 
   // 6. verify journal entry
