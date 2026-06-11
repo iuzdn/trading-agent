@@ -23,7 +23,10 @@ export interface JournalEntry {
   trace: {
     research: PipelineResult['research'];
     technical: PipelineResult['technical'];
+    macro?: PipelineResult['macro'];
+    critique?: PipelineResult['critique'];
     proposal: PipelineResult['proposal'];
+    risk?: PipelineResult['risk'];
     execution?: PipelineResult['execution'];
   };
 }
@@ -41,7 +44,10 @@ export async function appendPipelineResult(result: PipelineResult): Promise<void
     trace: {
       research: result.research,
       technical: result.technical,
+      ...(result.macro ? { macro: result.macro } : {}),
+      ...(result.critique ? { critique: result.critique } : {}),
       proposal: result.proposal,
+      ...(result.risk ? { risk: result.risk } : {}),
       ...(result.execution ? { execution: result.execution } : {}),
     },
   };

@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { childLogger } from '../lib/logger.js';
 import { appendPipelineResult } from '../lib/journal.js';
+import { getPortfolioState } from '../tools/alpaca.js';
 import { researchAnalyst } from './researchAnalyst.js';
 import { technicalAnalyst } from './technicalAnalyst.js';
+import { cachedMacro } from './macroAnalyst.js';
+import { devilsAdvocate } from './devilsAdvocate.js';
 import { portfolioManager } from './portfolioManager.js';
+import { riskManager } from './riskManager.js';
 import { executor } from './executor.js';
 import {
   ResearchRequestSchema,
@@ -11,6 +15,9 @@ import {
   type Decision,
   type ResearchReport,
   type TechnicalReport,
+  type MacroRegime,
+  type Critique,
+  type RiskAssessment,
   type TradeProposal,
   type ExecutionReport,
 } from '../types/contracts.js';
@@ -19,12 +26,27 @@ export interface PipelineResult {
   request: ResearchRequest;
   research: ResearchReport;
   technical: TechnicalReport;
+  macro?: MacroRegime;
+  critique?: Critique;
   proposal: TradeProposal;
+  risk?: RiskAssessment;
   execution?: ExecutionReport;
   decision: Decision;
   startedAt: string;
   finishedAt: string;
   latencyMs: number;
+}
+
+/** Everything finalize() needs; stage-specific fields are filled as we learn them. */
+interface PipelineParts {
+  research: ResearchReport;
+  technical: TechnicalReport;
+  macro?: MacroRegime;
+  critique?: Critique;
+  proposal: TradeProposal;
+  risk?: RiskAssessment;
+  execution?: ExecutionReport;
+  decision: Decision;
 }
 
 export interface PipelineOptions {
@@ -37,9 +59,9 @@ export interface PipelineOptions {
 }
 
 /**
- * Linear Phase 1 orchestrator. Sequence:
- *   research → technical → PM → (executor if non-HOLD)
- * Macro / Devil's Advocate / Risk Manager are Phase 2.
+ * Phase 2 hierarchical orchestrator (ARCHITECTURE §6). Sequence:
+ *   [research ‖ technical ‖ macro] → devil's advocate → PM
+ *     → risk gate → (executor if approved)
  */
 export async function runResearchPipeline(
   input: { ticker: string; triggerReason?: ResearchRequest['triggerReason']; context?: string },
@@ -58,21 +80,18 @@ export async function runResearchPipeline(
   const startedAt = new Date(t0).toISOString();
   log.info({ trigger: request.triggerReason }, 'pipeline start');
 
-  const finalize = async (
-    research: ResearchReport,
-    technical: TechnicalReport,
-    proposal: TradeProposal,
-    execution: ExecutionReport | undefined,
-    decision: Decision,
-  ): Promise<PipelineResult> => {
+  const finalize = async (parts: PipelineParts): Promise<PipelineResult> => {
     const finishedAt = new Date().toISOString();
     const result: PipelineResult = {
       request,
-      research,
-      technical,
-      proposal,
-      ...(execution ? { execution } : {}),
-      decision,
+      research: parts.research,
+      technical: parts.technical,
+      ...(parts.macro ? { macro: parts.macro } : {}),
+      ...(parts.critique ? { critique: parts.critique } : {}),
+      proposal: parts.proposal,
+      ...(parts.risk ? { risk: parts.risk } : {}),
+      ...(parts.execution ? { execution: parts.execution } : {}),
+      decision: parts.decision,
       startedAt,
       finishedAt,
       latencyMs: Date.now() - t0,
@@ -87,63 +106,112 @@ export async function runResearchPipeline(
         );
       }
     }
-    log.info(
-      { kind: decision.kind, latencyMs: result.latencyMs },
-      'pipeline done',
-    );
+    log.info({ kind: parts.decision.kind, latencyMs: result.latencyMs }, 'pipeline done');
     return result;
   };
 
-  const research = await researchAnalyst({
-    ticker: request.ticker,
-    lookbackDays: options.newsLookbackDays ?? 30,
-    requestId: request.requestId,
-  });
+  // Phase 1 — parallel analyst fan-out (macro is session-cached).
+  const [research, technical, macro] = await Promise.all([
+    researchAnalyst({
+      ticker: request.ticker,
+      lookbackDays: options.newsLookbackDays ?? 30,
+      requestId: request.requestId,
+    }),
+    technicalAnalyst({ ticker: request.ticker, requestId: request.requestId }),
+    cachedMacro(request.requestId),
+  ]);
 
-  const technical = await technicalAnalyst({
-    ticker: request.ticker,
-    requestId: request.requestId,
-  });
-
-  // Early exit: low analyst confidence (ARCHITECTURE §6).
+  // Early exit: low analyst confidence — skip the adversarial check (§3.1).
   if (research.confidence < 30 || technical.confidence < 30) {
     log.info({ research: research.confidence, technical: technical.confidence }, 'low confidence');
-    return finalize(research, technical, synthEmptyProposal(request.ticker), undefined, {
-      kind: 'NO_TRADE',
-      reason: 'low_analyst_confidence',
-      agentTrace: ['researchAnalyst', 'technicalAnalyst'],
+    return finalize({
+      research,
+      technical,
+      macro,
+      proposal: synthEmptyProposal(request.ticker),
+      decision: {
+        kind: 'NO_TRADE',
+        reason: 'low_analyst_confidence',
+        agentTrace: ['researchAnalyst', 'technicalAnalyst', 'macroAnalyst'],
+      },
     });
   }
+
+  // Phase 2 — adversarial check, then synthesis.
+  const critique = await devilsAdvocate({ research, technical, macro, requestId: request.requestId });
 
   const proposal = await portfolioManager({
     research,
     technical,
+    macro,
+    critique,
     requestId: request.requestId,
   });
 
+  const preExecTrace = [
+    'researchAnalyst',
+    'technicalAnalyst',
+    'macroAnalyst',
+    'devilsAdvocate',
+    'portfolioManager',
+  ];
+
   if (proposal.action === 'HOLD') {
     log.info({ confidence: proposal.confidence }, 'PM chose HOLD');
-    return finalize(research, technical, proposal, undefined, {
-      kind: 'NO_TRADE',
-      reason: 'pm_chose_hold',
-      agentTrace: ['researchAnalyst', 'technicalAnalyst', 'portfolioManager'],
+    return finalize({
+      research,
+      technical,
+      macro,
+      critique,
+      proposal,
+      decision: { kind: 'NO_TRADE', reason: 'pm_chose_hold', agentTrace: preExecTrace },
     });
   }
 
   if (options.dryRun) {
-    log.info('dryRun: skipping executor');
-    return finalize(research, technical, proposal, undefined, {
-      kind: 'NO_TRADE',
-      reason: 'dry_run',
-      agentTrace: ['researchAnalyst', 'technicalAnalyst', 'portfolioManager'],
+    log.info('dryRun: skipping risk gate + executor');
+    return finalize({
+      research,
+      technical,
+      macro,
+      critique,
+      proposal,
+      decision: { kind: 'NO_TRADE', reason: 'dry_run', agentTrace: preExecTrace },
     });
   }
 
-  const execution = await executor({ proposal, requestId: request.requestId });
-  return finalize(research, technical, proposal, execution, {
-    kind: 'TRADE',
-    proposal,
+  // Phase 3 — risk gate (veto power).
+  const portfolio = await getPortfolioState();
+  const risk = await riskManager({ proposal, portfolio, macro, requestId: request.requestId });
+  const riskTrace = [...preExecTrace, 'riskManager'];
+
+  if (risk.status === 'REJECTED') {
+    log.info({ reason: risk.reason, rules: risk.rulesTriggered }, 'risk manager vetoed');
+    return finalize({
+      research,
+      technical,
+      macro,
+      critique,
+      proposal,
+      risk,
+      decision: { kind: 'NO_TRADE', reason: `risk_rejected: ${risk.reason}`, agentTrace: riskTrace },
+    });
+  }
+
+  const finalProposal =
+    risk.status === 'MODIFIED' && risk.modifiedProposal ? risk.modifiedProposal : proposal;
+
+  // Phase 4 — execution.
+  const execution = await executor({ proposal: finalProposal, requestId: request.requestId });
+  return finalize({
+    research,
+    technical,
+    macro,
+    critique,
+    proposal: finalProposal,
+    risk,
     execution,
+    decision: { kind: 'TRADE', proposal: finalProposal, execution },
   });
 }
 

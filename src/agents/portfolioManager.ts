@@ -9,12 +9,16 @@ import {
   type TradeProposal,
   type ResearchReport,
   type TechnicalReport,
+  type MacroRegime,
+  type Critique,
 } from '../types/contracts.js';
 import riskRules from '../config/riskRules.json' with { type: 'json' };
 
 export interface PMInput {
   research: ResearchReport;
   technical: TechnicalReport;
+  macro: MacroRegime;
+  critique: Critique;
   requestId: string;
 }
 
@@ -47,12 +51,22 @@ ${JSON.stringify(input.research, null, 2)}
 ${JSON.stringify(input.technical, null, 2)}
 \`\`\`
 
+## Macro regime
+\`\`\`json
+${JSON.stringify(input.macro, null, 2)}
+\`\`\`
+
+## Devil's Advocate critique
+\`\`\`json
+${JSON.stringify(input.critique, null, 2)}
+\`\`\`
+
 ## Current portfolio (already fetched for you)
 \`\`\`json
 ${JSON.stringify(portfolio, null, 2)}
 \`\`\`
 
-Decide BUY / SELL / HOLD / CLOSE per the system prompt. Leave sizeUsd and sizePctOfEquity at 0; the orchestrator will compute them.`,
+Decide BUY / SELL / HOLD / CLOSE per the system prompt. Acknowledge or refute the Devil's Advocate's strongest point in your rationale. Leave sizeUsd and sizePctOfEquity at 0; the orchestrator will compute them.`,
       },
     ],
   });

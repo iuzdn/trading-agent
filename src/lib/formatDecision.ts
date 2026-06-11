@@ -32,6 +32,14 @@ export function formatDecisionCard(r: PipelineResult, opts: FormatOptions = {}):
   lines.push(
     `${tEmoji} *Technical:* ${r.technical.signal} ${r.technical.trend}  •  RSI ${r.technical.rsi14.toFixed(0)}  MACD ${r.technical.macdSignal}`,
   );
+  if (r.macro) {
+    const m = r.macro;
+    const mEmoji =
+      m.label === 'RISK_ON' ? '🟢' : m.label === 'CRISIS' ? '🔴' : m.label === 'RISK_OFF' ? '🟠' : '⚪️';
+    lines.push(
+      `${mEmoji} *Macro:* ${m.label}  •  VIX ${m.signals.vix}  •  SPY ${m.signals.trendSpy200} 200DMA`,
+    );
+  }
 
   // ── Reasoning ─────────────────────────────────────────────────────────
   lines.push('');
@@ -39,6 +47,9 @@ export function formatDecisionCard(r: PipelineResult, opts: FormatOptions = {}):
   lines.push(`*Research —* ${esc(r.research.thesis)}`);
   if (r.technical.commentary) {
     lines.push(`*Technical —* ${esc(r.technical.commentary)}`);
+  }
+  if (r.critique) {
+    lines.push(`*Devil's Advocate (${r.critique.strength}/10) —* ${esc(r.critique.bearCase)}`);
   }
   // The PM rationale only exists for a real proposal (not the low-confidence
   // early-exit placeholder). Show it whenever the PM actually ran.
@@ -60,6 +71,9 @@ export function formatDecisionCard(r: PipelineResult, opts: FormatOptions = {}):
       `entry $${p.entryPrice.toFixed(2)}  •  stop $${p.stopLoss.toFixed(2)}  •  target $${p.takeProfit.toFixed(2)}`,
     );
     lines.push(`horizon ${p.timeHorizonDays}d  •  conf ${p.confidence}`);
+    if (r.risk?.status === 'MODIFIED') {
+      lines.push(`🛡 _risk-adjusted: ${esc(r.risk.reason)}_`);
+    }
     if (e) {
       lines.push('');
       lines.push(
