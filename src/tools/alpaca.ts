@@ -103,6 +103,8 @@ export const getBarsTool: ClaudeToolSpec = {
 // ─── Tool: get_portfolio_state ────────────────────────────────────────────
 export interface PortfolioStateRaw {
   equity: number;
+  /** Previous trading day's closing equity — baseline for daily-loss checks. */
+  lastEquity: number;
   cash: number;
   buyingPower: number;
   dayTradeCount: number;
@@ -121,6 +123,7 @@ export async function getPortfolioState(): Promise<PortfolioStateRaw> {
   const [acc, positions] = await Promise.all([
     request<{
       equity: string;
+      last_equity: string;
       cash: string;
       buying_power: string;
       daytrade_count: number;
@@ -138,6 +141,7 @@ export async function getPortfolioState(): Promise<PortfolioStateRaw> {
   ]);
   return {
     equity: parseFloat(acc.equity),
+    lastEquity: parseFloat(acc.last_equity),
     cash: parseFloat(acc.cash),
     buyingPower: parseFloat(acc.buying_power),
     dayTradeCount: acc.daytrade_count,

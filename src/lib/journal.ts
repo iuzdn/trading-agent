@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { PipelineResult } from '../agents/orchestrator.js';
 import { logger } from './logger.js';
@@ -57,6 +57,35 @@ export async function appendPipelineResult(result: PipelineResult): Promise<void
     );
     throw err;
   }
+}
+
+/**
+ * Count executed trades (decision.kind === 'TRADE') journaled on the UTC day of
+ * `now`. Used by the Risk Manager to enforce maxNewTradesPerDay. Returns 0 if
+ * today's journal file doesn't exist yet.
+ */
+export async function countTradesToday(now = new Date()): Promise<number> {
+  const file = fileForDate(now);
+  let raw: string;
+  try {
+    raw = await readFile(file, 'utf8');
+  } catch {
+    return 0;
+  }
+  const dayPrefix = now.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  let count = 0;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as JournalEntry;
+      if (entry.decision?.kind === 'TRADE' && entry.startedAt.slice(0, 10) === dayPrefix) {
+        count++;
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return count;
 }
 
 export { fileForDate };

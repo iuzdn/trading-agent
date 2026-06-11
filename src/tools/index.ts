@@ -13,6 +13,7 @@ import {
   getAnalystRatingsTool,
 } from './finnhub.js';
 import { getIndexDataTool } from './marketIndex.js';
+import { getCorrelationsTool } from './correlations.js';
 
 export const allTools: ClaudeToolSpec[] = [
   getBarsTool,
@@ -23,6 +24,7 @@ export const allTools: ClaudeToolSpec[] = [
   getNewsTool,
   getAnalystRatingsTool,
   getIndexDataTool,
+  getCorrelationsTool,
 ];
 
 export const researchTools: ClaudeToolSpec[] = [
@@ -40,6 +42,8 @@ export const executorTools: ClaudeToolSpec[] = [placeOrderTool, getPortfolioStat
 
 export const macroTools: ClaudeToolSpec[] = [getIndexDataTool];
 
+export const riskTools: ClaudeToolSpec[] = [getPortfolioStateTool, getCorrelationsTool];
+
 export {
   getBarsTool,
   getPortfolioStateTool,
@@ -49,4 +53,5 @@ export {
   getNewsTool,
   getAnalystRatingsTool,
   getIndexDataTool,
+  getCorrelationsTool,
 };
