@@ -28,6 +28,12 @@ export interface RunAgentOptions {
   maxToolIterations?: number;
   requestId: string;
   agentId: string;
+  /**
+   * Enable Anthropic's server-side web_search tool. `true` uses the default
+   * cap; pass `{ maxUses }` to bound the number of searches per turn. The
+   * search runs server-side — it never reaches the client tool map.
+   */
+  webSearch?: boolean | { maxUses?: number };
 }
 
 export interface RunAgentResult {
@@ -56,11 +62,23 @@ function client(): Anthropic {
 export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   const log: Logger = childLogger({ requestId: opts.requestId, agentId: opts.agentId });
   const toolMap = new Map(opts.tools.map((t) => [t.name, t]));
-  const apiTools = opts.tools.map((t) => ({
+  const apiTools: Anthropic.Messages.ToolUnion[] = opts.tools.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
   }));
+  // Server-side web search. Declared as a tool but executed on Anthropic's
+  // infrastructure — deliberately NOT added to toolMap, so the client-side
+  // execution path below never tries to run it.
+  if (opts.webSearch) {
+    const maxUses =
+      typeof opts.webSearch === 'object' ? opts.webSearch.maxUses : undefined;
+    apiTools.push({
+      type: 'web_search_20250305',
+      name: 'web_search',
+      ...(maxUses ? { max_uses: maxUses } : {}),
+    });
+  }
 
   const messages: Anthropic.Messages.MessageParam[] = [...opts.messages];
   const toolCalls: RunAgentResult['toolCalls'] = [];
@@ -95,6 +113,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
     // Append assistant message verbatim
     messages.push({ role: 'assistant', content: response.content });
+
+    // A server-side tool (e.g. web_search) ran its loop and hit the internal
+    // iteration limit. Resume by re-sending — the API continues from the
+    // trailing server_tool_use block. Do NOT append a user turn.
+    if (response.stop_reason === 'pause_turn') {
+      continue;
+    }
 
     if (response.stop_reason !== 'tool_use') {
       const finalText = response.content
