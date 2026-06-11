@@ -447,17 +447,32 @@ export async function runResearchPipeline(req: ResearchRequest): Promise<Decisio
 - [ ] Paper trading only; assert `ALPACA_PAPER=true`
 
 ### Phase 2 — Adversarial & risk controls
-- [ ] Add `macroAnalyst` with caching
-- [ ] Add `devilsAdvocate`
-- [ ] Add `riskManager` with full rule set
-- [ ] Parallelize analyst fan-out
-- [ ] Add bracket OCO orders in executor
+- [x] Add `macroAnalyst` with caching (`data/state/macroCache.json`, 4h TTL;
+      SPY 200-DMA trend computed in code, VIX + yield curve via web_search)
+- [x] Add `devilsAdvocate` (web_search for disconfirming evidence)
+- [x] Add `riskManager` with full rule set (deterministic `lib/riskRules.ts`;
+      LLM decides APPROVED/REJECTED/MODIFIED, code re-asserts hard breaches)
+- [x] Parallelize analyst fan-out (`Promise.all` in the orchestrator)
+- [x] Add bracket OCO orders in executor (already shipped in Phase 1 via
+      `placeBracketOrder` / `order_class: 'bracket'`)
 - [ ] Migrate FMP (and Finnhub if available) tools from hand-coded REST
       wrappers to MCP-client wrappers. FMP exposes their full dataset via
       an MCP server at `https://financialmodelingprep.com/mcp?apikey=…`.
       Keeps the `ClaudeToolSpec` shape but removes the per-endpoint
       maintenance burden when FMP changes field names. Filter to an
       allowlist so we don't blow up the agent system prompt.
+      **Deferred to a follow-up (decision: keep REST wrappers for now).**
+
+**Phase 2 data gaps (deferred to Phase 3):**
+- **Sector concentration** rule is implemented but not enforced — Alpaca
+  positions carry no sector tag, so the check soft-passes with a note. Needs a
+  sector data source.
+- **Cooldown population**: `riskManager` reads `data/state/cooldowns.json`, but
+  nothing writes it yet. Population belongs to the Phase-3 Alpaca close-event
+  listener that detects stop-outs.
+- **Latency**: a full live run measured ~83s (over the §12 <35s target). The
+  Devil's Advocate (Sonnet + web_search) dominates. Per §12 the lever is to
+  downgrade non-critical agents to Haiku — revisit before Phase 3.
 
 ### Phase 3 — Learning loop
 - [ ] Add vector store
