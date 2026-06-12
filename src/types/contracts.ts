@@ -64,6 +64,28 @@ export const MacroRegimeSchema = z.object({
 });
 export type MacroRegime = z.infer<typeof MacroRegimeSchema>;
 
+// ─── Scout / screening ────────────────────────────────────────────────────
+export const ScoutCandidateSchema = z.object({
+  ticker: TickerSchema,
+  score: z.number().min(0).max(100),
+  reason: z.string().min(10),
+  stats: z.object({
+    momentum: z.number().min(-100).max(100),
+    rsi14: z.number().min(0).max(100),
+    vs200dma: z.enum(['above', 'below']),
+    pctChange: z.number().nullable(),
+  }),
+});
+export type ScoutCandidate = z.infer<typeof ScoutCandidateSchema>;
+
+export const ShortlistSchema = z.object({
+  asOf: z.string().datetime(),
+  regime: z.enum(['RISK_ON', 'RISK_OFF', 'NEUTRAL', 'CRISIS']),
+  universeSize: z.number().int().nonnegative(),
+  candidates: z.array(ScoutCandidateSchema).max(5),
+});
+export type Shortlist = z.infer<typeof ShortlistSchema>;
+
 export const TechnicalReportSchema = z.object({
   ticker: TickerSchema,
   trend: z.enum(['up', 'down', 'sideways']),

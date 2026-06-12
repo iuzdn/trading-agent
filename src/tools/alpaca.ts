@@ -4,7 +4,7 @@ import { logger } from '../lib/logger.js';
 
 const PAPER_URL = 'https://paper-api.alpaca.markets';
 const LIVE_URL = 'https://api.alpaca.markets';
-const DATA_URL = 'https://data.alpaca.markets';
+export const DATA_URL = 'https://data.alpaca.markets';
 
 function isPaper(): boolean {
   // Shared paper/live rule (mirrors src/alpaca.js isPaperTrading).
@@ -32,7 +32,7 @@ function headers(): Record<string, string> {
   };
 }
 
-async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(url, { ...init, headers: { ...headers(), ...(init.headers ?? {}) } });
   if (!res.ok) {
     const body = await res.text();

@@ -354,6 +354,8 @@ export const getFinancials: ClaudeTool = {
 | `get_portfolio_state` | Alpaca | – | none (always fresh) |
 | `place_order` | Alpaca | – | – |
 | `web_search` | Anthropic native | included | – |
+| `get_correlations` | Alpaca (derived) | – | 1h |
+| `get_market_movers` | Alpaca screener | – | 15min |
 
 ### 5.3 Caching layer
 
