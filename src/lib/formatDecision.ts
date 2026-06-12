@@ -1,4 +1,5 @@
 import type { PipelineResult } from '../agents/orchestrator.js';
+import type { Shortlist } from '../types/contracts.js';
 import { sanitizeMarkdownV1 } from './telegram.js';
 
 export interface FormatOptions {
@@ -84,5 +85,49 @@ export function formatDecisionCard(r: PipelineResult, opts: FormatOptions = {}):
 
   lines.push('');
   lines.push(`_${elapsed}s • req ${r.request.requestId.slice(0, 8)}_`);
+  return lines.join('\n');
+}
+
+/**
+ * Telegram card for a Scout shortlist. `fanOut` marks how many of the top
+ * candidates get the full pipeline treatment.
+ */
+export function formatShortlistCard(
+  s: Shortlist,
+  fanOut = 0,
+  opts: FormatOptions = {},
+): string {
+  const esc = opts.escapeProse === false ? (t: string) => t : sanitizeMarkdownV1;
+  const regimeEmoji =
+    s.regime === 'RISK_ON' ? '🟢' : s.regime === 'CRISIS' ? '🔴' : s.regime === 'RISK_OFF' ? '🟠' : '⚪️';
+  const lines: string[] = [];
+  lines.push(`*Scout shortlist*  ${regimeEmoji} _${s.regime}_  •  universe ${s.universeSize}`);
+  lines.push('');
+
+  if (s.candidates.length === 0) {
+    lines.push(
+      s.regime === 'CRISIS'
+        ? '⛔️ Crisis regime — no new longs considered.'
+        : '🪹 Nothing on today\'s screen met the bar. No candidates.',
+    );
+    return lines.join('\n');
+  }
+
+  s.candidates.forEach((c, i) => {
+    const runs = i < fanOut;
+    lines.push(
+      `${runs ? '🔎' : '•'} *${i + 1}. ${c.ticker}*  (score ${c.score})  mom ${c.stats.momentum}  RSI ${c.stats.rsi14.toFixed(0)}${
+        c.stats.pctChange !== null ? `  ${c.stats.pctChange >= 0 ? '+' : ''}${c.stats.pctChange.toFixed(1)}%` : ''
+      }`,
+    );
+    lines.push(`   ${esc(c.reason)}`);
+  });
+
+  lines.push('');
+  lines.push(
+    fanOut > 0
+      ? `_Top ${Math.min(fanOut, s.candidates.length)} get the full team treatment (🔎)…_`
+      : `_Shortlist only — use /research TICKER to dig in._`,
+  );
   return lines.join('\n');
 }

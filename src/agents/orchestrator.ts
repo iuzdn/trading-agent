@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { childLogger } from '../lib/logger.js';
 import { appendPipelineResult } from '../lib/journal.js';
+import { formatDecisionCard, formatShortlistCard } from '../lib/formatDecision.js';
 import { getPortfolioState } from '../tools/alpaca.js';
 import { researchAnalyst } from './researchAnalyst.js';
 import { technicalAnalyst } from './technicalAnalyst.js';
 import { cachedMacro } from './macroAnalyst.js';
+import { scout } from './scout.js';
 import { devilsAdvocate } from './devilsAdvocate.js';
 import { portfolioManager } from './portfolioManager.js';
 import { riskManager } from './riskManager.js';
@@ -20,6 +22,7 @@ import {
   type RiskAssessment,
   type TradeProposal,
   type ExecutionReport,
+  type Shortlist,
 } from '../types/contracts.js';
 
 export interface PipelineResult {
@@ -213,6 +216,77 @@ export async function runResearchPipeline(
     execution,
     decision: { kind: 'TRADE', proposal: finalProposal, execution },
   });
+}
+
+export interface ScoutPipelineOptions {
+  /** How many shortlist candidates get the full pipeline. Default 3; 0 = shortlist only. */
+  fanOut?: number;
+  /** Forwarded to each runResearchPipeline call. */
+  dryRun?: boolean;
+  /** Progress callback (e.g. Telegram sendMessage) — called with formatted cards. */
+  onUpdate?: (message: string) => Promise<void>;
+}
+
+export interface ScoutPipelineResult {
+  shortlist: Shortlist;
+  results: PipelineResult[];
+}
+
+/**
+ * Scout entry point: screen the market into a Shortlist, then fan the top
+ * `fanOut` candidates through the full research pipeline SEQUENTIALLY (bounds
+ * cost/rate limits; macro stays cached across runs). One candidate failing
+ * logs and continues to the next.
+ */
+export async function runScoutPipeline(
+  options: ScoutPipelineOptions = {},
+): Promise<ScoutPipelineResult> {
+  const requestId = randomUUID();
+  const log = childLogger({ requestId, agentId: 'scoutPipeline' });
+  const fanOut = Math.max(0, Math.min(options.fanOut ?? 3, 5));
+
+  const shortlist = await scout({ requestId });
+  log.info(
+    { regime: shortlist.regime, candidates: shortlist.candidates.length, fanOut },
+    'shortlist ready',
+  );
+  if (options.onUpdate) {
+    await options.onUpdate(formatShortlistCard(shortlist, fanOut));
+  }
+
+  const results: PipelineResult[] = [];
+  const toRun = shortlist.candidates.slice(0, fanOut);
+  for (const candidate of toRun) {
+    try {
+      const result = await runResearchPipeline(
+        {
+          ticker: candidate.ticker,
+          triggerReason: 'momentum_signal',
+          context: `Scout pick (score ${candidate.score}, regime ${shortlist.regime}): ${candidate.reason}`,
+        },
+        { dryRun: options.dryRun ?? false },
+      );
+      results.push(result);
+      if (options.onUpdate) {
+        await options.onUpdate(formatDecisionCard(result));
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ ticker: candidate.ticker, err: msg }, 'fan-out candidate failed — continuing');
+      if (options.onUpdate) {
+        await options.onUpdate(`❌ ${candidate.ticker} pipeline failed: ${msg}`);
+      }
+    }
+  }
+
+  log.info(
+    {
+      ran: results.length,
+      trades: results.filter((r) => r.decision.kind === 'TRADE').length,
+    },
+    'scout pipeline done',
+  );
+  return { shortlist, results };
 }
 
 function synthEmptyProposal(ticker: string): TradeProposal {
