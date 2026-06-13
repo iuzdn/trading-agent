@@ -198,20 +198,25 @@ The strategy is expressed in plain English in the system prompt — Claude inter
 
 A second, independent pipeline (TypeScript) that researches **one ticker** end to end and proposes a paper trade. Where the Dual Momentum executor above runs a fixed rules-based strategy on a schedule, this layer reasons about an individual name on demand — gathering fundamentals, news, and price action, then synthesizing a sized position recommendation.
 
-> **Status: Phase 1.** The research → technical → PM → executor path is wired in linear mode. The Macro Analyst, Devil's Advocate, and Risk Manager agents are specced in [ARCHITECTURE.md](ARCHITECTURE.md) for Phase 2 and not yet implemented. Paper trading only.
+> **Status: Phase 2 complete, plus Scout (Phase 2.5).** The full hierarchical pipeline is wired in [src/agents/orchestrator.ts](src/agents/orchestrator.ts) — parallel analyst fan-out (research ‖ technical ‖ macro), an adversarial Devil's Advocate check, the PM synthesis, and a Risk Manager rule gate with veto power. A separate **Scout** agent screens the whole market into a shortlist and fans the top names through that same pipeline. Paper trading only. Full spec: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Pipeline
 
 ```
 /research TICKER  (Telegram command or CLI)
     ↓
-Orchestrator  (linear, src/agents/orchestrator.ts)
+Orchestrator  (hierarchical, src/agents/orchestrator.ts)
     ↓
-Research Analyst   →  fundamentals + news/sentiment   (Sonnet, FMP + Finnhub)
-Technical Analyst  →  trend, RSI/MACD, key levels      (Haiku, Alpaca bars)
-    ↓   (early exit if either confidence < 30)
-PM / Decision Agent  →  TradeProposal: action, size, entry, stop, target
+┌─ Research Analyst   →  fundamentals + news/sentiment   (Sonnet, FMP + Finnhub)
+├─ Technical Analyst  →  trend, RSI/MACD, key levels      (Haiku, Alpaca bars)
+└─ Macro Analyst      →  market regime, session-cached     (Haiku, native web_search)
+    ↓   (early exit if research or technical confidence < 30)
+Devil's Advocate   →  bear-case critique + strength score   (Sonnet)
+    ↓
+PM / Decision Agent  →  TradeProposal: action, size, entry, stop, target   (Sonnet)
     ↓   (HOLD ⇒ no trade)
+Risk Manager  →  deterministic rule gate + correlations   (Haiku, veto power)
+    ↓   (REJECTED ⇒ no trade · MODIFIED ⇒ resized · APPROVED ⇒ pass through)
 Execution Agent  →  Alpaca paper order
     ↓
 JSONL trade journal  →  data/journal/YYYY-MM.jsonl  (full agent trace)
@@ -221,27 +226,49 @@ Telegram decision card
 
 Every numerical claim an agent makes must trace to a tool call, and every agent input/output is validated with Zod at the boundary (see [src/types/contracts.ts](src/types/contracts.ts)). System prompts live as Markdown in [src/config/prompts/](src/config/prompts/), never inline.
 
-### Agents (Phase 1)
+### Scout (whole-market screen)
+
+Where `/research TICKER` analyzes a name you name, **Scout** finds the names. It runs a two-stage funnel and then drives the full pipeline above for the best candidates:
+
+```
+/scout [N]  (Telegram) · npm run scout  (CLI) · opt-in cron (SCOUT_SCHEDULE)
+    ↓
+Scout  (src/agents/scout.ts)
+    ↓
+Stage 1 — deterministic screen   (Alpaca movers + most-actives, regime-filtered, no LLM)
+Stage 2 — Haiku triage            (picks ONLY from screened names; off-universe tickers dropped)
+    ↓
+Shortlist  →  top N candidates fan out through the full /research pipeline (sequential)
+```
+
+In a **CRISIS** regime Scout returns an empty shortlist and spends no LLM tokens. Cooldowns and positions already over the size cap are filtered out before triage. The Telegram form is `/scout` (top 3), `/scout N` (1–5), or `/scout list` (shortlist only). Scheduling is opt-in: set `SCOUT_SCHEDULE` to a cron expression (interpreted in America/New_York).
+
+### Agents
 
 | Agent | File | Model | Role |
 |-------|------|-------|------|
 | Orchestrator | [src/agents/orchestrator.ts](src/agents/orchestrator.ts) | — | Sequences the pipeline, applies confidence floors, writes the journal |
 | Research Analyst | [src/agents/researchAnalyst.ts](src/agents/researchAnalyst.ts) | Sonnet | Fundamentals + news/sentiment, grounded in FMP/Finnhub tool calls |
 | Technical Analyst | [src/agents/technicalAnalyst.ts](src/agents/technicalAnalyst.ts) | Haiku | Interprets deterministically-computed indicators (RSI, MACD, MAs) |
+| Macro Analyst | [src/agents/macroAnalyst.ts](src/agents/macroAnalyst.ts) | Haiku | Classifies the market regime (RISK_ON … CRISIS); session-cached, native web_search |
+| Devil's Advocate | [src/agents/devilsAdvocate.ts](src/agents/devilsAdvocate.ts) | Sonnet | Builds the bear case against the thesis with a 1–10 strength score |
 | PM / Decision | [src/agents/portfolioManager.ts](src/agents/portfolioManager.ts) | Sonnet | Synthesizes a sized proposal with stop + target; `<55` confidence ⇒ HOLD |
+| Risk Manager | [src/agents/riskManager.ts](src/agents/riskManager.ts) | Haiku | Deterministic rule gate + correlation check; can REJECT or resize (MODIFIED) |
+| Scout | [src/agents/scout.ts](src/agents/scout.ts) | Haiku | Screens the market into a ranked, regime-filtered Shortlist |
 | Execution | [src/agents/executor.ts](src/agents/executor.ts) | Haiku | Routes the approved proposal to Alpaca (paper) |
 
 ### Commands
 
 ```bash
-npm run dev              # start the Telegram listener for /research (tsx watch src/index.ts)
+npm run dev              # start the Telegram listener for /research + /scout (tsx watch src/index.ts)
 npm run research TICKER  # one-shot research run from the CLI
+npm run scout            # one-shot whole-market scout from the CLI
 npm run smoke            # end-to-end smoke test against the paper account
 npm test                 # vitest
 npm run typecheck        # tsc --noEmit
 ```
 
-On Telegram, `/research TICKER` triggers a run and replies with a decision card. Only one run is in flight at a time.
+On Telegram, `/research TICKER` triggers a single-name run and `/scout [N]` screens the market, each replying with decision cards. Only one run is in flight at a time.
 
 ### Environment
 
@@ -252,6 +279,7 @@ ANTHROPIC_API_KEY=...
 FMP_API_KEY=...          # Financial Modeling Prep — fundamentals & earnings
 FINNHUB_API_KEY=...      # news & analyst ratings
 TRADING_MODE=paper       # paper | live (live requires explicit opt-in)
+SCOUT_SCHEDULE=          # optional cron expr (America/New_York) to auto-run Scout; unset = manual only
 ```
 
 External API calls are wrapped in a cache layer ([src/lib/cache.ts](src/lib/cache.ts)) to save cost and respect free-tier rate limits during iteration. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the per-tool rate-limit and TTL table.
@@ -270,14 +298,14 @@ alpaca-agent/
 │   ├── alpaca.js         # (execution) Alpaca REST client
 │   ├── telegram.js       # (execution) alerts + command listener
 │   │
-│   ├── index.ts          # Research layer entry: Telegram /research listener
-│   ├── agents/           # orchestrator, research/technical analysts, PM, executor
-│   ├── tools/            # alpaca, fmp, finnhub, indicators + registry (index.ts)
-│   ├── lib/              # claude wrapper, cache, journal, logger, telegram, sizing
+│   ├── index.ts          # Research layer entry: Telegram /research + /scout listener, opt-in cron
+│   ├── agents/           # orchestrator + research/technical/macro analysts, devil's advocate, PM, risk, scout, executor
+│   ├── tools/            # alpaca, fmp, finnhub, screener, indicators + registry (index.ts)
+│   ├── lib/              # claude wrapper, cache, journal, logger, telegram, sizing, screen, state
 │   ├── types/            # contracts.ts — all Zod schemas + inferred TS types
 │   ├── config/
 │   │   ├── prompts/      # one .md system prompt per agent
 │   │   └── riskRules.json
-│   └── cli/              # research.ts (one-shot), smokeTest.ts
+│   └── cli/              # research.ts, scout.ts (one-shot), smokeTest.ts
 └── README.md
 ```
